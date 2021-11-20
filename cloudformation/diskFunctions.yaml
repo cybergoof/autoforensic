@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  CodeLocationBucket:
+    Type: String
+    Description: Default Bucket for Forensic code
+  MemberAutomationRole:
+    Type: String
+    Description: Name of the member Automation Role
+  ArtifactBucketName:
+    Type: String
+    Description: Name for the S3 bucket used to store forensic artifacts
+  ForensicsAMI:
+    Type: String
+    Description: AMI identifier for forensics image
+Resources:
+  DiskForensicAutomationRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action: 'sts:AssumeRole'
+      Description: >-
+        Disk Forensic Automation Role to provide access for Lambda to invoke
+        disk collection functions
+      RoleName: DiskForensicAutomationRole
+  DiskForensicAutomationPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: EC2Permissions
+            Effect: Allow
+            Action:
+              - 'ec2:AttachVolume'
+              - 'ec2:CopySnapshot'
+              - 'ec2:CreateTags'
+              - 'ec2:CreateVolume'
+              - 'ec2:DescribeSnapshots'
+              - 'ec2:DescribeSubnets'
+              - 'ec2:RunInstances'
+            Resource: '*'
+          - Sid: KMSPermissions
+            Effect: Allow
+            Action:
+              - 'kms:CreateGrant'
+              - 'kms:Decrypt'
+              - 'kms:DescribeKey'
+              - 'kms:Encrypt'
+              - 'kms:GenerateDataKey*'
+              - 'kms:ReEncrypt*'
+            Resource:
+              - !ImportValue ForensicKMSKeyARN
+          - Sid: LogsPermissions
+            Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:DescribeLogGroups'
+              - 'logs:DescribeLogStreams'
+              - 'logs:GetLogEvents'
+              - 'logs:PutLogEvents'
+            Resource: '*'
+          - Sid: IAMPermissions
+            Effect: Allow
+            Action:
+              - 'iam:PassRole'
+            Resource:
+              - !ImportValue EC2ForensicRoleARN
+          - Sid: S3Permissions
+            Effect: Allow
+            Action:
+              - 's3:PutObject'
+            Resource:
+              - !Join
+                - ''
+                - - !ImportValue ForensicArtifactBucketARN
+                  - /*
+          - Sid: STSPermissions
+            Effect: Allow
+            Action: 'sts:AssumeRole'
+            Resource: 'arn:aws:iam::*:role/IR-Automation-Member-Role'
+      ManagedPolicyName: DiskForensicAutomationPolicy
+      Roles:
+        - !Ref DiskForensicAutomationRole
+    DependsOn: DiskForensicAutomationRole
+  DiskForensicsCreateSnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/CreateSnapshot.zip'
+      Description: Create Snapshot Function
+      FunctionName: DiskForensicsCreateSnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 180
+      Environment:
+        Variables:
+          EVIDENCE_BUCKET: !Ref ArtifactBucketName
+          LOG_GROUP: !ImportValue ForensicAuditLogGroupName
+          ROLE_NAME: !Ref MemberAutomationRole
+  DiskForensicsCheckSnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/CheckSnapshot.zip'
+      Description: Check Snapshot Function
+      FunctionName: DiskForensicsCheckSnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+      Environment:
+        Variables:
+          ROLE_NAME: !Ref MemberAutomationRole
+  DiskForensicsCopySnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/CopySnapshot.zip'
+      Description: Copy Snapshot Function
+      FunctionName: DiskForensicsCopySnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 180
+      Environment:
+        Variables:
+          ROLE_NAME: !Ref MemberAutomationRole
+          KMS_KEY: !ImportValue ForensicKMSKeyARN
+  DiskForensicsCheckCopySnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/CheckCopySnapshot.zip'
+      Description: Check Copy Snapshot Function
+      FunctionName: DiskForensicsCheckCopySnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+      Environment:
+        Variables:
+          ROLE_NAME: !Ref MemberAutomationRole
+  DiskForensicsShareSnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/ShareSnapshot.zip'
+      Description: Share Snapshot Function
+      FunctionName: DiskForensicsShareSnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+      Environment:
+        Variables:
+          ROLE_NAME: !Ref MemberAutomationRole
+          SECURITY_ACCOUNT: !Ref 'AWS::AccountId'
+  DiskForensicsFinalCopySnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/FinalCopySnapshot.zip'
+      Description: Final Copy Snapshot Function
+      FunctionName: DiskForensicsFinalCopySnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+      Environment:
+        Variables:
+          KMS_KEY: !ImportValue ForensicKMSKeyARN
+  DiskForensicsFinalCheckSnapshot:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/FinalCheckSnapshot.zip'
+      Description: Final Check Snapshot Function
+      FunctionName: DiskForensicsFinalCheckSnapshot
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+  DiskForensicsCreateVolume:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/CreateVolume.zip'
+      Description: Create Volume Function
+      FunctionName: DiskForensicsCreateVolume
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 15
+      Environment:
+        Variables:
+          KMS_KEY: !ImportValue ForensicKMSKeyARN
+          SUPPORTED_AZS: !Sub
+            - '["${AZ1}","${AZ2}"]'
+            - AZ1: !ImportValue ForensicsAZ1
+              AZ2: !ImportValue ForensicsAZ2
+  DiskForensicsRunInstances:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/RunInstances.zip'
+      Description: Run Instances Function
+      FunctionName: DiskForensicsRunInstances
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 60
+      Environment:
+        Variables:
+          AMI_ID: !Ref ForensicsAMI
+          INSTANCE_PROFILE_NAME: !ImportValue EC2ForensicRoleName
+          SECURITY_GROUP: !ImportValue ForensicsCaptureSG
+          VPC_ID: !ImportValue ForensicsVPCID
+  DiskForensicsMountVolume:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeLocationBucket
+        S3Key: 'public/sample/609-Automating-Forensic-Disk-Collection/Lambda/zip/MountVolume.zip'
+      Description: Mount Volume Function
+      FunctionName: DiskForensicsMountVolume
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt
+        - DiskForensicAutomationRole
+        - Arn
+      Runtime: python3.8
+      Timeout: 60
+      Environment:
+        Variables:
+          LOG_GROUP: !ImportValue ForensicAuditLogGroupName
+Outputs:
+  DiskForensicsCreateSnapshotARN:
+    Description: The ARN of the CreateSnapshot Function
+    Value: !GetAtt
+      - DiskForensicsCreateSnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsCreateSnapshotARN
+  DiskForensicsCheckSnapshotARN:
+    Description: The ARN of the CheckSnapshot Function
+    Value: !GetAtt
+      - DiskForensicsCheckSnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsCheckSnapshotARN
+  DiskForensicsCopySnapshotARN:
+    Description: The ARN of the CopySnapshot Function
+    Value: !GetAtt
+      - DiskForensicsCopySnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsCopySnapshotARN
+  DiskForensicsCheckCopySnapshotARN:
+    Description: The ARN of the CheckCopySnapshot Function
+    Value: !GetAtt
+      - DiskForensicsCheckCopySnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsCheckCopySnapshotARN
+  DiskForensicsShareSnapshotARN:
+    Description: The ARN of the ShareSnapshot Function
+    Value: !GetAtt
+      - DiskForensicsShareSnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsShareSnapshotARN
+  DiskForensicsFinalCopySnapshotARN:
+    Description: The ARN of the FinalCopySnapshot Function
+    Value: !GetAtt
+      - DiskForensicsFinalCopySnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsFinalCopySnapshotARN
+  DiskForensicsFinalCheckSnapshotARN:
+    Description: The ARN of the FinalCheckSnapshot Function
+    Value: !GetAtt
+      - DiskForensicsFinalCheckSnapshot
+      - Arn
+    Export:
+      Name: DiskForensicsFinalCheckSnapshotARN
+  DiskForensicsCreateVolumeARN:
+    Description: The ARN of the CreateVolume Function
+    Value: !GetAtt
+      - DiskForensicsCreateVolume
+      - Arn
+    Export:
+      Name: DiskForensicsCreateVolumeARN
+  DiskForensicsRunInstancesARN:
+    Description: The ARN of the RunInstances Function
+    Value: !GetAtt
+      - DiskForensicsRunInstances
+      - Arn
+    Export:
+      Name: DiskForensicsRunInstancesARN
+  DiskForensicsMountVolumeARN:
+    Description: The ARN of the MountVolume Function
+    Value: !GetAtt
+      - DiskForensicsMountVolume
+      - Arn
+    Export:
+      Name: DiskForensicsMountVolumeARN

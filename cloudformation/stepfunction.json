@@ -1,0 +1,307 @@
+{
+  "Comment": "Step Function to process AWS EC2 EBS volume snapshots for forensic analysis",
+  "StartAt": "CreateSnapshot",
+  "States": {
+    "CreateSnapshot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CreateSnapLambda}:$LATEST",
+        "Payload": {
+          "DiskProcess.$": "$"
+        }
+      },
+      "Next": "CheckSnapshot",
+      "ResultPath": "$",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error-info",
+          "Next": "ErrorAlert"
+        }
+      ]
+    },
+    "CheckSnapshot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckSnapLambda}:$LATEST",
+        "Payload": {
+          "DiskProcess.$": "$.Payload"
+        }
+      },
+      "Next": "ProcessIncident",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RuntimeError"
+          ],
+          "IntervalSeconds": 30,
+          "BackoffRate": 1.5,
+          "MaxAttempts": 15
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error-info",
+          "Next": "ErrorAlert"
+        }
+      ]
+    },
+    "ErrorAlert": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${DiskForensicsSNSTopic}",
+        "Message": {
+          "Input.$": "$.error-info"
+        }
+      },
+      "End": true
+    },
+    "ProcessIncident": {
+      "Type": "Parallel",
+      "Comment": "Parallel state will be used for future enhancements around memory capture and instance isolation.",
+      "Branches": [
+        {
+          "StartAt": "ProcessSnaps",
+          "States": {
+            "ProcessSnaps": {
+              "Type": "Map",
+              "MaxConcurrency": 0,
+              "ItemsPath": "$.Payload.CapturedSnapshots",
+              "Iterator": {
+                "StartAt": "CopySnapshot",
+                "States": {
+                  "CopySnapshot": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${CopySnapLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$"
+                      }
+                    },
+                    "Next": "CheckCopySnapshot",
+                    "ResultPath": "$",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "CheckCopySnapshot": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${CheckCopySnapLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "ShareSnapshot",
+                    "ResultPath": "$",
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "RuntimeError"
+                        ],
+                        "IntervalSeconds": 30,
+                        "BackoffRate": 1.5,
+                        "MaxAttempts": 15
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "ShareSnapshot": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${ShareSnapLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "FinalCopySnapshot",
+                    "ResultPath": "$",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "FinalCopySnapshot": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${FinalCopySnapLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "FinalCheckSnapshot",
+                    "ResultPath": "$",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "FinalCheckSnapshot": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${FinalCheckSnapLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "CreateVolume",
+                    "ResultPath": "$",
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "RuntimeError"
+                        ],
+                        "IntervalSeconds": 30,
+                        "BackoffRate": 1.5,
+                        "MaxAttempts": 15
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "CreateVolume": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${CreateVolLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "RunInstance",
+                    "ResultPath": "$",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "RunInstance": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${RunInstanceLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "Next": "CreateInstanceWait",
+                    "ResultPath": "$",
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "CreateInstanceWait": {
+                    "Type": "Wait",
+                    "Seconds": 30,
+                    "Next": "MountForensicVolume"
+                  },
+                  "MountForensicVolume": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${MountVolLambda}:$LATEST",
+                      "Payload": {
+                        "DiskProcess.$": "$.Payload"
+                      }
+                    },
+                    "End": true,
+                    "ResultPath": "$",
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "RuntimeError",
+                          "ResourceNotFoundException"
+                        ],
+                        "IntervalSeconds": 30,
+                        "BackoffRate": 1.5,
+                        "MaxAttempts": 15
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": [
+                          "States.ALL"
+                        ],
+                        "ResultPath": "$.error-info",
+                        "Next": "MapErrorAlert"
+                      }
+                    ]
+                  },
+                  "MapErrorAlert": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::sns:publish",
+                    "Parameters": {
+                      "TopicArn": "${DiskForensicsSNSTopic}",
+                      "Message": {
+                        "Input.$": "$.error-info"
+                      }
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "End": true
+    }
+  }
+}

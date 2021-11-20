@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  ForensicStepFunctionLogGroupName:
+    Type: String
+    Description: Name for the CloudWatch Log Group used for Forensic Step Function Workflow
+Resources:
+  DiskForensicStepFunctionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - states.amazonaws.com
+          Action: 'sts:AssumeRole'
+      Description: >-
+        Disk Forensic Automation Role to provide access for StepFunctions to
+        invoke disk collection functions
+      RoleName: DiskForensicStepFunctionRole
+  DiskForensicStepFunctionPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'xray:PutTraceSegments'
+              - 'xray:PutTelemetryRecords'
+              - 'xray:GetSamplingRules'
+              - 'xray:GetSamplingTargets'
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - 'disk_functions:InvokeFunction'
+            Resource:
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsCreateSnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsCheckSnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsCopySnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsCheckCopySnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsShareSnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsFinalCopySnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsFinalCheckSnapshotARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsCreateVolumeARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsRunInstancesARN
+                  - ':*'
+              - !Join
+                - ''
+                - - !ImportValue DiskForensicsMountVolumeARN
+                  - ':*'
+          - Effect: Allow
+            Action:
+              - 'disk_functions:InvokeFunction'
+            Resource:
+              - !ImportValue DiskForensicsCreateSnapshotARN
+              - !ImportValue DiskForensicsCheckSnapshotARN
+              - !ImportValue DiskForensicsCopySnapshotARN
+              - !ImportValue DiskForensicsCheckCopySnapshotARN
+              - !ImportValue DiskForensicsShareSnapshotARN
+              - !ImportValue DiskForensicsFinalCopySnapshotARN
+              - !ImportValue DiskForensicsFinalCheckSnapshotARN
+              - !ImportValue DiskForensicsCreateVolumeARN
+              - !ImportValue DiskForensicsRunInstancesARN
+              - !ImportValue DiskForensicsMountVolumeARN
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogDelivery'
+              - 'logs:GetLogDelivery'
+              - 'logs:UpdateLogDelivery'
+              - 'logs:DeleteLogDelivery'
+              - 'logs:ListLogDeliveries'
+              - 'logs:PutResourcePolicy'
+              - 'logs:DescribeResourcePolicies'
+              - 'logs:DescribeLogGroups'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'sns:Publish'
+            Resource: !Ref DiskForensicsSNSTopic
+      ManagedPolicyName: DiskForensicStepFunctionPolicy
+      Roles:
+        - !Ref DiskForensicStepFunctionRole
+    DependsOn:
+      - DiskForensicStepFunctionRole
+      - DiskForensicsSNSTopic
+  ForensicStepFunctionLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Ref ForensicStepFunctionLogGroupName
+  DiskForensicStepFunction:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      DefinitionString: !Sub
+        - >-
+          {"Comment":"Step Function to process AWS EC2 EBS volume snapshots for forensic analysis","StartAt":"CreateSnapshot","States":{"CreateSnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${CreateSnapLambda}:$LATEST","Payload":{"
+          DiskProcess.$":"$"}},"Next":"CheckSnapshot","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"ErrorAlert"}]},"CheckSnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${CheckSnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"ProcessIncident","ResultPath":"$","Retry":[{"ErrorEquals":["RuntimeError"],"IntervalSeconds":30,"BackoffRate":1.5,"MaxAttempts":15}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"ErrorAlert"}]},"ErrorAlert":{"Type":"Task","Resource":"arn:aws:states:::sns:publish","Parameters":{"TopicArn":"${DiskForensicsSNSTopic}","Message":{"Input.$":"$.error-info"}},"End":true},"ProcessIncident":{"Type":"Parallel","Comment":"Parallel state will be used for future enhancements around memory capture and instance isolation.","Branches":[{"StartAt":"ProcessSnaps","States":{"ProcessSnaps":{"Type":"Map","MaxConcurrency":0,"ItemsPath":"$.Payload.CapturedSnapshots","Iterator":{"StartAt":"CopySnapshot","States":{"CopySnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${CopySnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$"}},"Next":"CheckCopySnapshot","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"CheckCopySnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${CheckCopySnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"ShareSnapshot","ResultPath":"$","Retry":[{"ErrorEquals":["RuntimeError"],"IntervalSeconds":30,"BackoffRate":1.5,"MaxAttempts":15}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"ShareSnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${ShareSnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"FinalCopySnapshot","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"FinalCopySnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${FinalCopySnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"FinalCheckSnapshot","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"FinalCheckSnapshot":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${FinalCheckSnapLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"CreateVolume","ResultPath":"$","Retry":[{"ErrorEquals":["RuntimeError"],"IntervalSeconds":30,"BackoffRate":1.5,"MaxAttempts":15}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"CreateVolume":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${CreateVolLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"RunInstance","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"RunInstance":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${RunInstanceLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"Next":"CreateInstanceWait","ResultPath":"$","Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"CreateInstanceWait":{"Type":"Wait","Seconds":30,"Next":"MountForensicVolume"},"MountForensicVolume":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":"${MountVolLambda}:$LATEST","Payload":{"DiskProcess.$":"$.Payload"}},"End":true,"ResultPath":"$","Retry":[{"ErrorEquals":["RuntimeError","ResourceNotFoundException"],"IntervalSeconds":30,"BackoffRate":1.5,"MaxAttempts":15}],"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":"$.error-info","Next":"MapErrorAlert"}]},"MapErrorAlert":{"Type":"Task","Resource":"arn:aws:states:::sns:publish","Parameters":{"TopicArn":"${DiskForensicsSNSTopic}","Message":{"Input.$":"$.error-info"}},"End":true}}},"End":true}}}],"End":true}}}
+        - CreateSnapLambda: !ImportValue DiskForensicsCreateSnapshotARN
+          CheckSnapLambda: !ImportValue DiskForensicsCheckSnapshotARN
+          CopySnapLambda: !ImportValue DiskForensicsCopySnapshotARN
+          CheckCopySnapLambda: !ImportValue DiskForensicsCheckCopySnapshotARN
+          ShareSnapLambda: !ImportValue DiskForensicsShareSnapshotARN
+          FinalCopySnapLambda: !ImportValue DiskForensicsFinalCopySnapshotARN
+          FinalCheckSnapLambda: !ImportValue DiskForensicsFinalCheckSnapshotARN
+          CreateVolLambda: !ImportValue DiskForensicsCreateVolumeARN
+          RunInstanceLambda: !ImportValue DiskForensicsRunInstancesARN
+          MountVolLambda: !ImportValue DiskForensicsMountVolumeARN
+          DiskForensicsSNSTopic: !Ref DiskForensicsSNSTopic
+      RoleArn: !GetAtt
+        - DiskForensicStepFunctionRole
+        - Arn
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt
+                - ForensicStepFunctionLogGroup
+                - Arn
+        IncludeExecutionData: true
+        Level: ALL
+      StateMachineName: DiskForensicStepFunction
+    DependsOn: DiskForensicStepFunctionPolicy
+  DiskForensicsSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "Disk Forensics Error Topic"
+      TopicName: "DiskForensicsErrorTopic"
+Outputs:
+  DiskForensicStepFunctionARN:
+    Description: The ARN of the Disk Forensic Step Function
+    Value: !GetAtt
+      - DiskForensicStepFunction
+      - Arn
+    Export:
+      Name: DiskForensicStepFunctionARN

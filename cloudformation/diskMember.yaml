@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation template for deploying member IR role and policy
+Parameters:
+  MasterAccountNum:
+    Type: String
+    Description: Master Security Account Num
+  MasterAccountRoleName:
+    Type: String
+    Default: DiskForensicAutomationRole
+    Description: Default IR Automation Master Role
+Resources:
+  IRAutomationMemberRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Join
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref MasterAccountNum
+                  - ':role/'
+                  - !Ref MasterAccountRoleName
+            Action: 'sts:AssumeRole'
+      Description: Role to provide access for Incident Response Automation
+      RoleName: IR-Automation-Member-Role
+  IRAutomationMemberPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: EC2Permissions
+            Effect: Allow
+            Action:
+              - 'ec2:CopySnapshot'
+              - 'ec2:DescribeInstances'
+              - 'ec2:CreateTags'
+              - 'ec2:DescribeSnapshots'
+              - 'ec2:ModifySnapshotAttribute'
+              - 'ec2:CreateSnapshots'
+              - 'ec2:CreateSnapshot'
+            Resource: '*'
+          - Sid: KMSPermissions
+            Effect: Allow
+            Action:
+              - 'kms:CreateGrant'
+              - 'kms:Decrypt'
+              - 'kms:DescribeKey'
+              - 'kms:Encrypt'
+              - 'kms:GenerateDataKey*'
+              - 'kms:ReEncrypt*'
+            Resource: '*'
+      ManagedPolicyName: IR-Automation-Member-Policy
+      Roles:
+        - !Ref IRAutomationMemberRole
+    DependsOn: IRAutomationMemberRole

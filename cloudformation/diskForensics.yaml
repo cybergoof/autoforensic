@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  CodeLocationBucket:
+    Type: String
+    Default: awsiammedia
+    Description: Default Bucket for Forensic code
+  ForensicResourcesURL:
+    Type: String
+    Default: >-
+      https://awsiammedia.s3.amazonaws.com/public/sample/609-Automating-Forensic-Disk-Collection/CFN/yaml/Administrator/forensicsResources.yaml
+    Description: CFN Template URL for Disk Forensics Resources
+  ForensicFunctionURL:
+    Type: String
+    Default: >-
+      https://awsiammedia.s3.amazonaws.com/public/sample/609-Automating-Forensic-Disk-Collection/CFN/yaml/Administrator/diskFunctions.yaml
+    Description: CFN Template URL for Disk Forensics Lambda Functions
+  ForensicStepFunctionURL:
+    Type: String
+    Default: >-
+      https://awsiammedia.s3.amazonaws.com/public/sample/609-Automating-Forensic-Disk-Collection/CFN/yaml/Administrator/diskStepFunction.yaml
+    Description: CFN Template URL for Disk Forensics Step Function
+  ForensicStepFunctionInvokeURL:
+    Type: String
+    Default: >-
+      https://awsiammedia.s3.amazonaws.com/public/sample/609-Automating-Forensic-Disk-Collection/CFN/yaml/Administrator/diskForensicInvoke.yaml
+    Description: CFN Template URL for Disk Forensics Step Function Invoke Lambda
+  VPCCIDR:
+    Type: String
+    Default: 172.16.0.0/16
+    Description: Default VPC CIDR
+  AZ1:
+    Type: String
+    Default: us-east-1a
+    Description: Default AZ1
+  AZ1CIDR:
+    Type: String
+    Default: 172.16.20.0/20
+    Description: Default AZ1 CIDR
+  AZ2:
+    Type: String
+    Default: us-east-1b
+    Description: Default AZ2
+  AZ2CIDR:
+    Type: String
+    Default: 172.16.32.0/20
+    Description: Default AZ2 CIDR
+  ORGID:
+    Type: String
+    Default: o-0000000000
+    Description: AWS Organizations ID to Allow use of KMS key
+  MemberAutomationRole:
+    Type: String
+    Default: IR-Automation-Member-Role
+    Description: Name of the member Automation Role
+  ArtifactBucketName:
+    Type: String
+    Description: Name for the S3 bucket used to store forensic artifacts
+  ForensicAuditLogGroupName:
+    Type: String
+    Default: ForensicDiskAudit
+    Description: Name for the CloudWatch Log Group used for Forensic Audit Logs
+  ForensicReadinessLogGroupName:
+    Type: String
+    Default: ForensicDiskReadiness
+    Description: Name for the CloudWatch Log Group used for Forensic Readiness Logs
+  ForensicCaptureLogGroupName:
+    Type: String
+    Default: ForensicDiskCapture
+    Description: Name for the CloudWatch Log Group used for Forensic Capture Logs
+  EC2ForensicRole:
+    Type: String
+    Default: EC2ForensicsCollectionRole
+    Description: Name of the EC2 instance profile
+  ForensicsAMI:
+    Type: String
+    Description: AMI identifier for forensics image
+  ForensicStepFunctionLogGroupName:
+    Type: String
+    Default: ForensicStepFunctionLogs
+    Description: Name for the CloudWatch Log Group used for Forensic Step Function Workflow
+Resources:
+  forensicResources:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      TemplateURL: !Ref ForensicResourcesURL
+      TimeoutInMinutes: '60'
+      Parameters:
+        VPCCIDR: !Ref VPCCIDR
+        AZ1: !Ref AZ1
+        AZ1CIDR: !Ref AZ1CIDR
+        AZ2: !Ref AZ2
+        AZ2CIDR: !Ref AZ2CIDR
+        ORGID: !Ref ORGID
+        MemberAutomationRole: !Ref MemberAutomationRole
+        ArtifactBucketName: !Ref ArtifactBucketName
+        ForensicAuditLogGroupName: !Ref ForensicAuditLogGroupName
+        ForensicReadinessLogGroupName: !Ref ForensicReadinessLogGroupName
+        ForensicCaptureLogGroupName: !Ref ForensicCaptureLogGroupName
+        EC2ForensicRole: !Ref EC2ForensicRole
+  forensicFunctions:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      TemplateURL: !Ref ForensicFunctionURL
+      TimeoutInMinutes: '60'
+      Parameters:
+        MemberAutomationRole: !Ref MemberAutomationRole
+        ArtifactBucketName: !Ref ArtifactBucketName
+        ForensicsAMI: !Ref ForensicsAMI
+        CodeLocationBucket: !Ref CodeLocationBucket
+    DependsOn: forensicResources
+  forensicStepFunction:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      TemplateURL: !Ref ForensicStepFunctionURL
+      TimeoutInMinutes: '60'
+      Parameters:
+        ForensicStepFunctionLogGroupName: !Ref ForensicStepFunctionLogGroupName
+    DependsOn: forensicFunctions
+  forensicStepFunctionInvoke:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      TemplateURL: !Ref ForensicStepFunctionInvokeURL
+      TimeoutInMinutes: '60'
+    DependsOn: forensicStepFunction

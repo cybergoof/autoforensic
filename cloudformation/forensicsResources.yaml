@@ -1,0 +1,328 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation template for deploying member IR role and policy
+Parameters:
+  VPCCIDR:
+    Type: String
+    Description: Default VPC CIDR
+  AZ1:
+    Type: String
+    Description: Default AZ1
+  AZ1CIDR:
+    Type: String
+    Description: Default AZ1 CIDR
+  AZ2:
+    Type: String
+    Description: Default AZ2
+  AZ2CIDR:
+    Type: String
+    Description: Default AZ2 CIDR
+  ORGID:
+    Type: String
+    Description: AWS Organizations ID to Allow use of KMS key
+  MemberAutomationRole:
+    Type: String
+    Description: Name of the member Automation Role
+  ArtifactBucketName:
+    Type: String
+    Description: Name for the S3 bucket used to store forensic artifacts
+  ForensicAuditLogGroupName:
+    Type: String
+    Description: Name for the CloudWatch Log Group used for Forensic Audit Logs
+  ForensicReadinessLogGroupName:
+    Type: String
+    Description: Name for the CloudWatch Log Group used for Forensic Readiness Logs
+  ForensicCaptureLogGroupName:
+    Type: String
+    Description: Name for the CloudWatch Log Group used for Forensic Capture Logs
+  EC2ForensicRole:
+    Type: String
+    Description: Name of the EC2 instance profile
+Resources:
+  forensicsVPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ForensicsVPC
+  forensicsSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Ref AZ1
+      CidrBlock: !Ref AZ1CIDR
+      VpcId: !Ref forensicsVPC
+      Tags:
+        - Key: Name
+          Value: ForensicsSubnet1
+  forensicsSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Ref AZ2
+      CidrBlock: !Ref AZ2CIDR
+      VpcId: !Ref forensicsVPC
+      Tags:
+        - Key: Name
+          Value: ForensicsSubnet2
+  forensicsRT:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref forensicsVPC
+      Tags:
+        - Key: Name
+          Value: ForensicsRouteTable
+  forensicsSubnet1RTAttach:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref forensicsSubnet1
+      RouteTableId: !Ref forensicsRT
+  forensicsSubnet2RTAttach:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref forensicsSubnet2
+      RouteTableId: !Ref forensicsRT
+  S3Endpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref forensicsVPC
+      RouteTableIds:
+        - !Ref forensicsRT
+  LogsServiceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow https to client host
+      VpcId: !Ref forensicsVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: LogsInterfaceEndpointSG
+  LogsEndpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      SecurityGroupIds:
+        - !Ref LogsServiceSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref forensicsSubnet1
+        - !Ref forensicsSubnet2
+      VpcEndpointType: Interface
+      VpcId: !Ref forensicsVPC
+  ForensicsCaptureSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Allow output to S3 and Logs to client host
+      VpcId: !Ref forensicsVPC
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          Description: Allow Outbound access
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ForensicsInstanceSG
+  ForensicEncryptionKey:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: KMS Key for Forensic capture and automation
+      Enabled: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Join
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref 'AWS::AccountId'
+                  - ':root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow use of the key and attachment of persistent resources
+            Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:PrincipalOrgID': !Ref ORGID
+          - Sid: Allow attachment of persistent resources
+            Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - 'kms:CreateGrant'
+              - 'kms:ListGrants'
+              - 'kms:RevokeGrant'
+            Resource: '*'
+            Condition:
+              Bool:
+                'kms:GrantIsForAWSResource': 'true'
+              StringEquals:
+                'aws:PrincipalOrgID': !Ref ORGID
+  ForensicKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: alias/ForensicEncryptionKey
+      TargetKeyId: !Ref ForensicEncryptionKey
+  ForensicArtifactBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref ForensicEncryptionKey
+              SSEAlgorithm: 'aws:kms'
+      BucketName: !Ref ArtifactBucketName
+      VersioningConfiguration:
+        Status: Enabled
+  ForensicAuditLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Ref ForensicAuditLogGroupName
+  ForensicCaptureLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Ref ForensicCaptureLogGroupName
+  ForensicReadinessLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Ref ForensicReadinessLogGroupName
+  EC2ForensicsCollectionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Effect: Allow
+          Principal:
+            Service:
+              - ec2.amazonaws.com
+          Action: 'sts:AssumeRole'
+      Description: Role to provide access for EC2 to write forensic artifacts
+      RoleName: !Ref EC2ForensicRole
+  EC2ForensicsCollectionPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: KMSPermissions
+            Effect: Allow
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:DescribeKey'
+              - 'kms:GenerateDataKey'
+            Resource: !GetAtt
+              - ForensicEncryptionKey
+              - Arn
+          - Sid: LogsPermissions
+            Effect: Allow
+            Action:
+              - 'logs:CreateLogStream'
+              - 'logs:DescribeLogGroups'
+              - 'logs:DescribeLogStreams'
+              - 'logs:PutLogEvents'
+            Resource: '*'
+          - Sid: S3Permissions
+            Effect: Allow
+            Action: 's3:PutObject'
+            Resource: !Join
+              - ''
+              - - !GetAtt
+                  - ForensicArtifactBucket
+                  - Arn
+                - /*
+      ManagedPolicyName: EC2ForensicsCollectionPolicy
+      Roles:
+        - !Ref EC2ForensicsCollectionRole
+    DependsOn: EC2ForensicsCollectionRole
+  EC2ForensicsCollectionInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Ref EC2ForensicRole
+      Roles:
+        - !Ref EC2ForensicsCollectionRole
+    DependsOn: EC2ForensicsCollectionRole
+Outputs:
+  ForensicsVPC:
+    Description: The ID of the VPC
+    Value: !Ref forensicsVPC
+    Export:
+      Name: ForensicsVPCID
+  ForensicsAZ1:
+    Description: The ID of AZ1
+    Value: !Ref AZ1
+    Export:
+      Name: ForensicsAZ1
+  ForensicsAZ2:
+    Description: The ID of AZ2
+    Value: !Ref AZ2
+    Export:
+      Name: ForensicsAZ2
+  ForensicsSG:
+    Description: The ID of the forensic SG
+    Value: !GetAtt
+      - ForensicsCaptureSecurityGroup
+      - GroupId
+    Export:
+      Name: ForensicsCaptureSG
+  ForensicInstanceProfileName:
+    Description: The name of the forensic instance profile
+    Value: !Ref EC2ForensicRole
+    Export:
+      Name: EC2ForensicRoleName
+  ForensicInstanceRoleARN:
+    Description: The ARN of the forensic instance profile
+    Value: !GetAtt
+      - EC2ForensicsCollectionRole
+      - Arn
+    Export:
+      Name: EC2ForensicRoleARN
+  ForensicInstanceProfileARN:
+    Description: The ARN of the forensic instance profile
+    Value: !GetAtt
+      - EC2ForensicsCollectionInstanceProfile
+      - Arn
+    Export:
+      Name: EC2ForensicInstanceProfileARN
+  ForensicKMSKeyARN:
+    Description: The ARN of the forensic KMS Key
+    Value: !GetAtt
+      - ForensicEncryptionKey
+      - Arn
+    Export:
+      Name: ForensicKMSKeyARN
+  ForensicArtifactBucketARN:
+    Description: The ARN of the forensic Artifact Bucket
+    Value: !GetAtt
+      - ForensicArtifactBucket
+      - Arn
+    Export:
+      Name: ForensicArtifactBucketARN
+  ForensicAuditLogGroupName:
+    Description: The Name of the forensic audit CloudWatch log group
+    Value: !Ref ForensicAuditLogGroupName
+    Export:
+      Name: ForensicAuditLogGroupName
+  ForensicCaptureLogGroupName:
+    Description: The Name of the forensic audit CloudWatch log group
+    Value: !Ref ForensicCaptureLogGroupName
+    Export:
+      Name: ForensicCaptureLogGroupName
+  ForensicReadinessLogGroupName:
+    Description: The Name of the forensic audit CloudWatch log group
+    Value: !Ref ForensicReadinessLogGroupName
+    Export:
+      Name: ForensicReadinessLogGroupName

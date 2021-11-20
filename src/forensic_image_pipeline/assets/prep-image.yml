@@ -1,0 +1,198 @@
+name: PrepForensicImage
+description: This component is used to install install binaries, configure forensic scripts, and update jobs on the disk forensic image.
+schemaVersion: 1.0
+phases:
+  - name: build
+    steps:
+      -
+        name: InstallTools
+        action: ExecuteBash
+        inputs:
+          commands:
+            - sudo apt-get update
+            - sudo apt-get upgrade
+            - sudo apt-get install dc3dd
+            - sudo apt-get install incron
+            - sudo echo ubuntu >> /etc/incron.allow
+      -
+        name: CreateCollectorSript
+        action: CreateFile
+        inputs:
+          - path: /home/ubuntu/collector.sh
+            content: |
+              #!/bin/bash
+              # ensuring that the destination bucket environment variable has been set
+              if [[ -e $1/$2 ]];
+              then
+              echo "[+] $(date -u) disk /dev/nvme1n1 has been mounted. Starting Collection." >> /home/ubuntu/collection.log
+              if [[ -z $DESTINATION_BUCKET ]];
+              then
+              echo "[!] $(date -u) Environment variable DESTINATION_BUCKET does not exist. Exiting" >> /home/ubuntu/event.log
+              exit 1
+              elif [[ -z $IMAGE_NAME ]];
+              then
+              echo "[!] $(date -u) Environment variable IMAGE_NAME does not exist. Exiting" >> /home/ubuntu/event.log
+              exit 1
+              elif [[ -z $INCIDENT_ID ]];
+              then
+              echo "[!] $(date -u) Environment variable INCIDENT_ID does not exist. Exiting" >> /home/ubuntu/event.log
+              exit 1
+              else
+              echo "[+] $(date -u) running command dc3dd if=$1/$2 hash=md5 log=/home/ubuntu/collection.log bufsz=30M verb=on | aws s3 cp - "s3://$DESTINATION_BUCKET/$INCIDENT_ID/disk_evidence/$IMAGE_NAME.image.dd"">>/home/ubuntu/collection.log
+              # writing an image out to the destination S3 bucket
+              SIZE=$(blockdev --getsize64 $1/$2)
+              dc3dd if=$1/$2 hash=md5 log=/home/ubuntu/collection.log bufsz=30M verb=on 2> /home/ubuntu/cloudwatch.log | aws s3 cp --expected-size "$SIZE" - "s3://$DESTINATION_BUCKET/$INCIDENT_ID/disk_evidence/$IMAGE_NAME.image.dd"
+              echo "[+] $(date -u) running command aws s3 cp collection.log $DESTINATION_BUCKET/$INCIDENT_ID/disk_evidence/$IMAGE_NAME.collection.log">>/home/ubuntu/collection.log
+              # writing the dc3dd generated collection log as well as the script generated event log to the destination bucket
+              aws s3 cp /home/ubuntu/collection.log "s3://$DESTINATION_BUCKET/$INCIDENT_ID/disk_evidence/$IMAGE_NAME.collection.log"
+              aws s3 cp /home/ubuntu/event.log "s3://$DESTINATION_BUCKET/$INCIDENT_ID/disk_evidence/$IMAGE_NAME.event.log"
+              # shutting down instance, which will terminate it
+              sleep 60
+              init 0
+              fi
+              fi
+
+            owner: ubuntu
+            group: ubuntu
+            permissions: 0755
+      -
+        name: CreateOrchestratorScript
+        action: CreateFile
+        inputs:
+          - path: /home/ubuntu/orchestrator.sh
+            content: |
+              #!/bin/bash
+              source /etc/environment
+              sudo flock -xn /home/ubuntu/collector.lck -c "/home/ubuntu/collector.sh $1 $2"
+              if [[ $? == 1 ]];
+              then
+              echo "$(date -u) unsuccessfully executed" >> log.txt
+              sleep 10
+              fi
+
+            owner: ubuntu
+            group: ubuntu
+            permissions: 0755
+      -
+        name: CreateIncronCheckerScript
+        action: CreateFile
+        inputs:
+          - path: /home/ubuntu/incronChecker.sh
+            content: |
+              #!/bin/bash
+              SERVICE="incron"
+              if systemctl status "$SERVICE" >/dev/null
+              then
+                echo "$SERVICE is running" >> /home/ubuntu/readiness.log
+              else
+                echo "$SERVICE stopped" >> /home/ubuntu/readiness.log
+              fi
+
+            owner: ubuntu
+            group: ubuntu
+            permissions: 0755
+      -
+        name: CreateCloudwatchConfig
+        action: CreateFile
+        inputs:
+          - path: /opt/aws/amazon-cloudwatch-agent/bin/cloudwatchConfig.json
+            content: |
+              {
+                "agent": {
+                    "metrics_collection_interval": 10,
+                    "run_as_user": "cwagent"
+                },
+                "logs": {
+                    "logs_collected": {
+                        "files": {
+                            "collect_list": [
+                                {
+                                    "file_path": "/home/ubuntu/cloudwatch.log",
+                                    "log_group_name": "ForensicDiskCapture",
+                                    "log_stream_name": "{instance_id}"
+                                },
+                                {
+                                    "file_path": "/home/ubuntu/readiness.log",
+                                    "log_group_name": "ForensicDiskReadiness",
+                                    "log_stream_name": "{instance_id}"
+                                }
+                            ]
+                        }
+                    }
+                },
+                "metrics": {
+                    "append_dimensions": {
+                        "AutoScalingGroupName": "${aws:AutoScalingGroupName}",
+                        "ImageId": "${aws:ImageId}",
+                        "InstanceId": "${aws:InstanceId}",
+                        "InstanceType": "${aws:InstanceType}"
+                    },
+                    "metrics_collected": {
+                        "cpu": {
+                            "measurement": [
+                                "cpu_usage_idle",
+                                "cpu_usage_iowait",
+                                "cpu_usage_user",
+                                "cpu_usage_system"
+                            ],
+                            "metrics_collection_interval": 10,
+                            "resources": [
+                                "*"
+                            ],
+                            "totalcpu": false
+                        },
+                        "disk": {
+                            "measurement": [
+                                "used_percent",
+                                "inodes_free"
+                            ],
+                            "metrics_collection_interval": 10,
+                            "resources": [
+                                "*"
+                            ]
+                        },
+                        "diskio": {
+                            "measurement": [
+                                "io_time"
+                            ],
+                            "metrics_collection_interval": 10,
+                            "resources": [
+                                "*"
+                            ]
+                        },
+                        "mem": {
+                            "measurement": [
+                                "mem_used_percent"
+                            ],
+                            "metrics_collection_interval": 10
+                        },
+                        "swap": {
+                            "measurement": [
+                                "swap_used_percent"
+                            ],
+                            "metrics_collection_interval": 10
+                        }
+                    }
+                }
+              }
+            owner: root
+            group: root
+            permissions: 0755
+      -
+        name: ConfigureCloudWatch
+        action: ExecuteBash
+        inputs:
+          commands:
+            - sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/cloudwatchConfig.json -s
+      -
+        name: UpdateJobs
+        action: ExecuteBash
+        inputs:
+          commands:
+            - echo "*/1 * * * * /home/ubuntu/incronChecker.sh" >> newcron
+            - crontab -u ubuntu newcron
+            - rm newcron
+            - echo "/dev/disk/by-path IN_CREATE /home/ubuntu/orchestrator.sh /dev nvme1n1" >> newincron
+            - incrontab -u ubuntu newincron
+            - rm newincron
+
