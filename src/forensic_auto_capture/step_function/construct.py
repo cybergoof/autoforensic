@@ -96,7 +96,7 @@ class StepFunctionConstruct(cdk.Construct):
             task.add_retry(errors=["RuntimeError"],
                            interval=cdk.Duration.seconds(30),
                            backoff_rate=1.5,
-                           max_attempts=60)
+                           max_attempts=120)
         return task
 
     def _create_map_state(self) -> stepfunctions.Map:
