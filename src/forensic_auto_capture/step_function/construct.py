@@ -20,7 +20,7 @@ class StepFunctionConstruct(cdk.Construct):
         self._process_incident_task = self._create_process_incident_task()
         self._state_definition = self.build_state_machine()
         self.state_machine = stepfunctions.StateMachine(self, "StateMachine", definition=self._state_definition,
-                                                         timeout=cdk.Duration.minutes(20))
+                                                         timeout=cdk.Duration.minutes(40))
 
     def _build_other_tasks(self) -> None:
         self._error_alert_sns = sns.Topic(scope=self, id="ErrorTopic", display_name="Disk Forensics Error Topic",
