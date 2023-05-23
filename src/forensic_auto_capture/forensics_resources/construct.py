@@ -48,7 +48,7 @@ class ForensicResources(cdk.Construct):
                                          encryption=s3.BucketEncryption.KMS,
                                          versioned=False,
                                          removal_policy=cdk.RemovalPolicy.DESTROY,
-                                         auto_delete_objects=True
+                                         #auto_delete_objects=True
                                          )
         return
 
